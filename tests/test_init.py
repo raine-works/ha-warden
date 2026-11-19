@@ -8,10 +8,13 @@ from homeassistant.auth.auth_store import AuthStore
 from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
 from homeassistant.auth.models import Group as AuthGroup
 from homeassistant.components import frontend
+from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
+from homeassistant.const import EVENT_PANELS_UPDATED
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
+    async_capture_events,
     async_fire_time_changed,
 )
 
@@ -531,3 +534,68 @@ async def test_auth_data_reloads_after_restart(
     assert group_ids(reloaded) == [f"warden-{kid.id}"]
     assert reloaded.permissions.check_entity("light.den", "read")
     assert not reloaded.permissions.check_entity("light.den", "control")
+
+
+async def test_logged_in_user_is_prompted_and_can_enroll(
+    hass: HomeAssistant,
+    mfa_module: str,
+    warden: WardenManager,
+    hass_ws_client: Any,
+    make_user: Any,
+    user_ws: Any,
+) -> None:
+    """An open session hears 2FA become required, and can set it up there."""
+    kid = await make_user()
+    client = await user_ws(kid)
+    await client.send_json_auto_id({"type": "warden/me/subscribe"})
+    sub_id = (await client.receive_json())["id"]
+    first = await client.receive_json()
+    assert first["id"] == sub_id
+    assert first["event"]["mfa"] == "exempt"
+    assert first["event"]["available_mfa_modules"] == [
+        {"id": mfa_module, "name": "Insecure Personal Identify Number"}
+    ]
+
+    sidebar_refreshes = async_capture_events(hass, EVENT_PANELS_UPDATED)
+    await create_group(
+        hass, hass_ws_client, name="Kids", members=[kid.id], require_mfa=True
+    )
+    event = (await client.receive_json())["event"]
+    assert event["mfa"] == "grace"
+    assert event["mfa_deadline"]
+    # Open frontends refetch the sidebar, which now has Account security.
+    assert sidebar_refreshes
+
+    # The prompt runs Home Assistant's own setup flow over the same socket.
+    await client.send_json_auto_id(
+        {"type": "auth/setup_mfa", "mfa_module_id": mfa_module}
+    )
+    form = await client.receive_json()
+    assert form["result"]["type"] == "form"
+    await client.send_json_auto_id(
+        {
+            "type": "auth/setup_mfa",
+            "flow_id": form["result"]["flow_id"],
+            "user_input": {"pin": "123456"},
+        }
+    )
+    # Enrolling pushes the new status, possibly before the flow's own result.
+    messages = [await client.receive_json(), await client.receive_json()]
+    result = next(m for m in messages if m.get("type") == "result")
+    pushed = next(m for m in messages if m.get("type") == "event")
+    assert result["result"]["type"] == "create_entry"
+    assert pushed["event"]["mfa"] == "compliant"
+    assert pushed["event"]["mfa_modules"] == [mfa_module]
+
+
+async def test_prompt_script_loads_on_every_page(
+    hass: HomeAssistant, warden: WardenManager
+) -> None:
+    """The prompt is registered as an extra frontend module while loaded."""
+    urls = hass.data[DATA_EXTRA_MODULE_URL].urls
+    assert any("/warden_static/warden-prompt.js" in url for url in urls)
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    urls = hass.data[DATA_EXTRA_MODULE_URL].urls
+    assert not any("warden-prompt.js" in url for url in urls)

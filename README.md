@@ -34,6 +34,8 @@ two-factor authentication.
   grace period. After the grace period, people who still haven't set it up can
   only reach their profile page until they do; access comes back the moment
   they enroll.
+- **A setup prompt** that reaches people who are already logged in, and walks
+  them through setting up an authenticator app right there.
 - A **Warden** admin panel in the sidebar, and an **Account security** page
   that only appears for people who still need to set up 2FA.
 
@@ -96,9 +98,17 @@ Turn on **Require two-factor authentication** in a group, or for everyone on the
 
 | State | Meaning |
 | --- | --- |
-| Grace period | 2FA required, not set up yet. Full access; the **Account security** page shows the deadline. |
+| Grace period | 2FA required, not set up yet. Full access, with a reminder (see below) and an **Account security** page showing the deadline. |
 | Restricted | Grace period over. No entities, dashboards or panels except their profile, where they can set up 2FA. Administrators lose admin rights until they enroll. |
 | Enrolled | 2FA set up. Normal access. |
+
+**People are prompted wherever they are.** The moment 2FA becomes required for
+someone, even if they're already logged in, a dialog opens on whatever page they
+have open and walks them through setup: scan a QR code with an authenticator
+app, enter the code, done. During the grace period they can choose **Later**
+(they're asked again next session). Once restricted, the dialog stays until
+they've set it up, or they log out. When they finish, their access comes back
+straight away.
 
 The grace clock starts the first time a requirement applies to someone and
 keeps running after they enroll, so turning 2FA off later restricts them right

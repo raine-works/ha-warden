@@ -48,6 +48,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: WardenConfigEntry) -> bo
     entry.async_on_unload(guards.async_remove)
     entry.async_on_unload(manager.async_stop)
 
+    # Runs on every page, to prompt logged-in users when 2FA becomes required.
+    prompt_url = await _async_prompt_url(hass)
+    frontend.add_extra_js_url(hass, prompt_url)
+    entry.async_on_unload(lambda: frontend.remove_extra_js_url(hass, prompt_url))
+
     await manager.async_start()
     return True
 
@@ -73,6 +78,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: WardenConfigEntry) -> N
     await store.async_load()
     await WardenManager(hass, store).async_release_all()
     await store.async_remove()
+
+
+async def _async_prompt_url(hass: HomeAssistant) -> str:
+    integration = await async_get_integration(hass, DOMAIN)
+    return f"{STATIC_URL}/warden-prompt.js?v={integration.version}"
 
 
 async def _async_register_panels(hass: HomeAssistant) -> None:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from homeassistant.auth.models import User
 from homeassistant.components import websocket_api
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 import probatio as vol
 
 from .const import (
@@ -17,7 +19,13 @@ from .const import (
     PANEL_ADMIN,
     SCOPES,
 )
-from .manager import LockoutError, UserStatus, WardenManager, manageable
+from .manager import (
+    SIGNAL_UPDATED,
+    LockoutError,
+    UserStatus,
+    WardenManager,
+    manageable,
+)
 
 ENTITY_RULES_SCHEMA = vol.Schema(
     {
@@ -49,6 +57,7 @@ def async_register(hass: HomeAssistant) -> None:
         ws_delete_group,
         ws_update_settings,
         ws_me,
+        ws_subscribe_me,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -270,13 +279,54 @@ async def ws_me(
     """Return the current user's own Warden status."""
     if (manager := _manager(hass, connection, msg)) is None:
         return
+    connection.send_result(msg["id"], await _async_me(hass, manager, connection.user))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/me/subscribe"})
+@websocket_api.async_response
+async def ws_subscribe_me(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Send the current user's status now and whenever it changes.
+
+    The 2FA prompt that runs on every page follows this, so it can ask an
+    already logged-in user to set up 2FA the moment it becomes required.
+    """
+    if _manager(hass, connection, msg) is None:
+        return
     user = connection.user
-    groups = manager.store.groups_for_user(user.id)
-    connection.send_result(
-        msg["id"],
-        {
-            **_status_dict(manager.status.get(user.id)),
-            "groups": [group.name for group in groups],
-            "mfa_modules": list(await hass.auth.async_get_enabled_mfa(user)),
-        },
+    last: dict[str, Any] | None = None
+
+    async def async_push() -> None:
+        nonlocal last
+        # Warden may have been reloaded since: always use the current manager.
+        if (manager := hass.data.get(DOMAIN)) is None:
+            return
+        me = await _async_me(hass, manager, user)
+        if me != last:
+            last = me
+            connection.send_message(websocket_api.event_message(msg["id"], me))
+
+    @callback
+    def updated() -> None:
+        hass.async_create_task(async_push(), eager_start=True)
+
+    connection.subscriptions[msg["id"]] = async_dispatcher_connect(
+        hass, SIGNAL_UPDATED, updated
     )
+    connection.send_result(msg["id"])
+    await async_push()
+
+
+async def _async_me(
+    hass: HomeAssistant, manager: WardenManager, user: User
+) -> dict[str, Any]:
+    return {
+        **_status_dict(manager.status.get(user.id)),
+        "groups": [group.name for group in manager.store.groups_for_user(user.id)],
+        "mfa_modules": list(await hass.auth.async_get_enabled_mfa(user)),
+        "available_mfa_modules": [
+            {"id": module.id, "name": module.name}
+            for module in hass.auth.auth_mfa_modules
+        ],
+    }

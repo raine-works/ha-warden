@@ -1,6 +1,7 @@
 // Warden sidebar panels. One element serves both:
 //   mode "admin"    — manage groups, members, permissions and 2FA settings
 //   mode "security" — tells a user they must set up two-factor authentication
+//                      (the setup dialog itself is in warden-prompt.js)
 // Plain web component, no build step. Every user-supplied string goes through
 // esc() before it reaches innerHTML.
 
@@ -219,6 +220,10 @@ class WardenPanel extends HTMLElement {
 
   _renderSecurity() {
     const me = this._me || {};
+    const setup = `
+      <button class="primary" data-action="setup">Set it up now</button>
+      <p class="muted" style="margin-top:16px">You can also manage two-factor
+      authentication on your <a href="/profile/security" data-action="goto-security">profile</a>.</p>`;
     if (me.mfa === "restricted") {
       return `
         <div class="card center">
@@ -226,7 +231,7 @@ class WardenPanel extends HTMLElement {
           <h2>Two-factor authentication required</h2>
           <p class="hint">Your access is limited until you set up two-factor
           authentication for your account.</p>
-          <button class="primary" data-action="goto-security">Set it up now</button>
+          ${setup}
         </div>`;
     }
     if (me.mfa === "grace") {
@@ -237,7 +242,7 @@ class WardenPanel extends HTMLElement {
           <p class="hint">Your account will be required to use two-factor
           authentication. Set it up before <b>${esc(fmtDate(me.mfa_deadline))}</b>
           to keep full access.</p>
-          <button class="primary" data-action="goto-security">Set it up now</button>
+          ${setup}
         </div>`;
     }
     return `
@@ -323,12 +328,26 @@ class WardenPanel extends HTMLElement {
               : u.managed
                 ? "Managed"
                 : "User";
-        const mfaClass = { compliant: "good", grace: "warn", restricted: "bad", unenforceable: "bad" }[u.mfa] || "";
-        const mfa = u.is_owner
-          ? `<span class="muted">${u.mfa_modules.length ? "Enrolled" : "Owner (exempt)"}</span>`
-          : `<span class="chip ${mfaClass}">${esc(MFA_LABELS[u.mfa] || "—")}</span>${
-              u.mfa === "grace" ? `<div class="muted">until ${esc(fmtDate(u.mfa_deadline))}</div>` : ""
-            }`;
+        // Whether 2FA is set up and whether it's required are separate: someone
+        // can be enrolled without being required to, and the other way round.
+        const enrolled = u.mfa_modules.length > 0;
+        const required = ["compliant", "grace", "restricted", "unenforceable"].includes(u.mfa);
+        let chip;
+        if (enrolled) {
+          chip = `<span class="chip good">Enrolled</span>`;
+        } else if (required) {
+          const cls = { grace: "warn", restricted: "bad", unenforceable: "bad" }[u.mfa] || "";
+          chip = `<span class="chip ${cls}">${esc(MFA_LABELS[u.mfa])}</span>`;
+        } else {
+          chip = `<span class="chip">Not set up</span>`;
+        }
+        let note = required ? "Required" : "Not required";
+        if (u.is_owner) {
+          note = "Owner, never required";
+        } else if (u.mfa === "grace") {
+          note = `Required by ${fmtDate(u.mfa_deadline)}`;
+        }
+        const mfa = `${chip}<div class="muted">${esc(note)}</div>`;
         return `
           <tr>
             <td>${esc(u.name)}${u.is_active ? "" : ` <span class="muted">(inactive)</span>`}</td>
@@ -573,7 +592,10 @@ class WardenPanel extends HTMLElement {
   _bind() {
     const root = this.shadowRoot;
     root.querySelectorAll("[data-action]").forEach((el) =>
-      el.addEventListener("click", () => this._action(el.dataset.action, el.dataset)),
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        this._action(el.dataset.action, el.dataset);
+      }),
     );
     if (!this._draft) {
       return;
@@ -624,6 +646,14 @@ class WardenPanel extends HTMLElement {
           this._tab = data.tab;
           this._render();
           return;
+        case "setup":
+          // warden-prompt.js, loaded on every page, runs the setup dialog. It
+          // only loads with a fresh page, so fall back to the profile page.
+          if (window.__wardenPrompt) {
+            window.dispatchEvent(new CustomEvent("warden-mfa-setup"));
+            return;
+          }
+        // falls through
         case "goto-security":
           history.pushState(null, "", "/profile/security");
           window.dispatchEvent(new CustomEvent("location-changed"));

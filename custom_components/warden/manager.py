@@ -13,7 +13,7 @@ import uuid
 from homeassistant.auth import EVENT_USER_ADDED, EVENT_USER_REMOVED, EVENT_USER_UPDATED
 from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
 from homeassistant.auth.models import User
-from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.const import EVENT_PANELS_UPDATED, EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import (
     area_registry as ar,
@@ -189,10 +189,12 @@ class WardenManager:
     async def async_reconcile_all(self) -> None:
         """Bring every user in line with the configuration."""
         async with self._lock:
+            before = self._sidebar_state()
             self._update_mfa_issue()
             for user in await self.hass.auth.async_get_users():
                 await self._async_reconcile(user)
             await self.bridge.async_remove_unused()
+            self._notify_sidebars(before)
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
     async def async_reconcile_user_id(self, user_id: str) -> None:
@@ -200,9 +202,25 @@ class WardenManager:
         if (user := await self.hass.auth.async_get_user(user_id)) is None:
             return
         async with self._lock:
+            before = self._sidebar_state()
             await self._async_reconcile(user)
             await self.bridge.async_remove_unused()
+            self._notify_sidebars(before)
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
+
+    @callback
+    def _sidebar_state(self) -> dict[str, tuple[bool, UiAccess | None]]:
+        """Return what decides each user's sidebar (see guards.py)."""
+        return {
+            user_id: (status.mfa in (MFA_GRACE, MFA_RESTRICTED), status.ui)
+            for user_id, status in self.status.items()
+        }
+
+    @callback
+    def _notify_sidebars(self, before: dict[str, tuple[bool, UiAccess | None]]) -> None:
+        """Have open frontends refetch their panels if anyone's changed."""
+        if self._sidebar_state() != before:
+            self.hass.bus.async_fire(EVENT_PANELS_UPDATED)
 
     async def _async_reconcile(self, user: User) -> None:
         if not manageable(user):
