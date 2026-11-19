@@ -24,7 +24,12 @@ SCOPE_ENTITY = "entity_ids"
 SCOPE_DEVICE = "device_ids"
 SCOPE_AREA = "area_ids"
 SCOPE_DOMAIN = "domains"
-SCOPES = (SCOPE_ENTITY, SCOPE_DEVICE, SCOPE_AREA, SCOPE_DOMAIN)
+# Home Assistant's policies have no label scope; Warden expands label rules
+# into the entities they cover (see policy.py).
+SCOPE_LABEL = "label_ids"
+# The scopes a Home Assistant policy can hold.
+POLICY_SCOPES = (SCOPE_ENTITY, SCOPE_DEVICE, SCOPE_AREA, SCOPE_DOMAIN)
+SCOPES = (*POLICY_SCOPES, SCOPE_LABEL)
 
 # Two-factor states reported for a user.
 MFA_EXEMPT = "exempt"  # not required

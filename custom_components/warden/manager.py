@@ -20,6 +20,7 @@ from homeassistant.helpers import (
     device_registry as dr,
     entity_registry as er,
     issue_registry as ir,
+    label_registry as lr,
 )
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -116,6 +117,7 @@ class WardenManager:
             er.EVENT_ENTITY_REGISTRY_UPDATED,
             dr.EVENT_DEVICE_REGISTRY_UPDATED,
             ar.EVENT_AREA_REGISTRY_UPDATED,
+            lr.EVENT_LABEL_REGISTRY_UPDATED,
         ):
             self._unsubs.append(hass.bus.async_listen(event_type, self._on_registry))
         self._unsubs.append(

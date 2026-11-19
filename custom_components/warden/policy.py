@@ -11,6 +11,9 @@ applied at compile time: each allow rule that covers a denied entity is
 replaced by explicit grants for the entities it covers, minus the denied ones.
 Allow rules that touch no denied entity stay as native scope rules, so they
 keep matching devices and entities added later without a recompile.
+
+Labels work the same way: Home Assistant's policies have no label scope, so
+a label rule is always expanded into the entities it covers.
 """
 
 from __future__ import annotations
@@ -26,16 +29,22 @@ from homeassistant.auth.permissions.const import (
     SUBCAT_ALL,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 
 from .const import (
     LEVEL_CONTROL,
     LEVEL_DENY,
     LEVEL_READ,
+    POLICY_SCOPES,
     SCOPE_AREA,
     SCOPE_DEVICE,
     SCOPE_DOMAIN,
     SCOPE_ENTITY,
+    SCOPE_LABEL,
     SCOPES,
 )
 from .models import EntityRules
@@ -64,6 +73,7 @@ class EntityIndex:
         self._hass = hass
         self._ent_reg = er.async_get(hass)
         self._dev_reg = dr.async_get(hass)
+        self._area_reg = ar.async_get(hass)
 
     @callback
     def entity_ids(self) -> set[str]:
@@ -97,6 +107,24 @@ class EntityIndex:
         entry = self._ent_reg.async_get(entity_id)
         return entry.area_id if entry else None
 
+    @callback
+    def label_ids(self, entity_id: str) -> set[str]:
+        """Return the labels that make a label rule match the entity.
+
+        Like targeting a label in an action: labels on the entity, on its
+        device, and on its area (its own, or else its device's).
+        """
+        if (entry := self._ent_reg.async_get(entity_id)) is None:
+            return set()
+        labels = set(entry.labels)
+        area_id = entry.area_id
+        if entry.device_id and (device := self._dev_reg.async_get(entry.device_id)):
+            labels |= device.labels
+            area_id = area_id or device.area_id
+        if area_id and (area := self._area_reg.async_get_area(area_id)):
+            labels |= area.labels
+        return labels
+
 
 def _covers(index: EntityIndex, entity_id: str, scope: str, key: str) -> bool:
     """Return whether an allow rule matches, the way Home Assistant matches it."""
@@ -106,6 +134,8 @@ def _covers(index: EntityIndex, entity_id: str, scope: str, key: str) -> bool:
         return index.device_id(entity_id) == key
     if scope == SCOPE_AREA:
         return index.device_area_id(entity_id) == key
+    if scope == SCOPE_LABEL:
+        return key in index.label_ids(entity_id)
     return entity_id.partition(".")[0] == key
 
 
@@ -166,8 +196,9 @@ def compile_policy(
     allow = {scope: dict(keys) for scope, keys in merged.allow.items()}
     allow_all = merged.all
     expanded = False
+    labels = allow.pop(SCOPE_LABEL)
 
-    if merged.has_denies:
+    if merged.has_denies or labels:
         index = EntityIndex(hass)
         universe = index.entity_ids()
         denied = {
@@ -189,7 +220,7 @@ def compile_policy(
                 if entity_id not in denied:
                     grants[entity_id] = _max_level(grants.get(entity_id), level)
 
-        if allow_all is not None:
+        if allow_all is not None and merged.has_denies:
             expand(universe, allow_all)
             allow_all = None
             expanded = True
@@ -201,6 +232,10 @@ def compile_policy(
                     del allow[scope][key]
                     expand(covered, level)
                     expanded = True
+
+        for key, level in labels.items():
+            expand((e for e in universe if _covers(index, e, SCOPE_LABEL, key)), level)
+            expanded = True
 
         for entity_id in denied:
             allow[SCOPE_ENTITY].pop(entity_id, None)
@@ -214,7 +249,7 @@ def compile_policy(
     # there, even False, as "allow everything".
     if allow_all is not None:
         entities[SUBCAT_ALL] = _grant(allow_all)
-    for scope in SCOPES:
+    for scope in POLICY_SCOPES:
         if allow[scope]:
             entities[scope] = {
                 key: _grant(level) for key, level in sorted(allow[scope].items())

@@ -9,6 +9,7 @@ from homeassistant.components import websocket_api
 from homeassistant.components.frontend import DATA_PANELS
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import label_registry as lr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 import probatio as vol
 
@@ -156,6 +157,13 @@ async def ws_info(
             "users": users,
             "dashboards": dashboards,
             "panels": panels,
+            "labels": sorted(
+                (
+                    {"label_id": label.label_id, "name": label.name}
+                    for label in lr.async_get(hass).async_list_labels()
+                ),
+                key=lambda label: label["name"].casefold(),
+            ),
             "mfa_modules": [
                 {"id": module.id, "name": module.name}
                 for module in hass.auth.auth_mfa_modules

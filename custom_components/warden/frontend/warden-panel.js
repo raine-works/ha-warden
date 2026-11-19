@@ -10,6 +10,7 @@ const SCOPES = [
   ["device_ids", "Device"],
   ["area_ids", "Area"],
   ["domains", "Domain"],
+  ["label_ids", "Label"],
 ];
 const LEVELS = [
   ["read", "Read"],
@@ -456,8 +457,9 @@ class WardenPanel extends HTMLElement {
         <div ${d.admin ? `style="opacity:.5;pointer-events:none"` : ""}>
           <h3>Entities</h3>
           <p class="hint">Rules match an entity directly, everything on a device,
-          everything on devices in an area, or a whole domain. Control includes
-          read. Deny overrides any allow, from any group.</p>
+          everything on devices in an area, a whole domain, or everything with a
+          label (on the entity, its device or its area). Control includes read.
+          Deny overrides any allow, from any group.</p>
           <div class="field" style="max-width:260px">
             <span>Every entity</span>${levelSelect(d.all, `id="all"`, true)}
           </div>
@@ -495,6 +497,9 @@ class WardenPanel extends HTMLElement {
       return Object.values(hass.devices || {})
         .map((dev) => [dev.id, dev.name_by_user || dev.name || dev.id])
         .sort((a, b) => a[1].localeCompare(b[1]));
+    }
+    if (scope === "label_ids") {
+      return (this._info.labels || []).map((label) => [label.label_id, label.name]);
     }
     if (scope === "area_ids") {
       return Object.values(hass.areas || {})

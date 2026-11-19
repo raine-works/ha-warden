@@ -11,6 +11,7 @@ from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     entity_registry as er,
+    label_registry as lr,
 )
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -150,3 +151,46 @@ async def test_deny_all(hass: HomeAssistant, home: dict) -> None:
     """Denying everything overrides every allow."""
     p = perms(hass, EntityRules(all="control"), EntityRules(all="deny"))
     assert access(p, "light.kitchen") == "none"
+
+
+async def test_label_rules(hass: HomeAssistant, home: dict) -> None:
+    """A label matches entities that have it, or whose device or area has it."""
+    labels = lr.async_get(hass)
+    kids = labels.async_create("Kids").label_id
+    secure = labels.async_create("Secure").label_id
+    ent_reg = er.async_get(hass)
+    ent_reg.async_update_entity("light.garage", labels={kids})
+    dr.async_get(hass).async_update_device(home["device"], labels={secure})
+
+    p = perms(hass, EntityRules(label_ids={kids: "control"}))
+    assert access(p, "light.garage") == "control"
+    assert access(p, "light.kitchen") == "none"
+
+    # On the device: everything on it.
+    p = perms(hass, EntityRules(label_ids={secure: "read"}))
+    assert access(p, "light.kitchen") == "read"
+    assert access(p, "lock.back") == "read"
+
+    # On an area: entities in it, directly or through their device.
+    ar.async_get(hass).async_update(home["kitchen"], labels={kids})
+    p = perms(hass, EntityRules(label_ids={kids: "control"}))
+    assert access(p, "lock.back") == "control"
+    assert access(p, "light.garage") == "control"
+
+
+async def test_label_deny(hass: HomeAssistant, home: dict) -> None:
+    """A label deny removes labeled entities from any allow."""
+    secure = lr.async_get(hass).async_create("Secure").label_id
+    er.async_get(hass).async_update_entity("lock.back", labels={secure})
+    p = perms(hass, EntityRules(all="control"), EntityRules(label_ids={secure: "deny"}))
+    assert access(p, "lock.back") == "none"
+    assert access(p, "light.kitchen") == "control"
+
+
+async def test_label_rules_are_expanded(hass: HomeAssistant, home: dict) -> None:
+    """Policies have no label scope, so labels compile to entity grants."""
+    kids = lr.async_get(hass).async_create("Kids").label_id
+    er.async_get(hass).async_update_entity("light.garage", labels={kids})
+    policy, snapshot = compile_policy(hass, [EntityRules(label_ids={kids: "read"})])
+    assert snapshot
+    assert policy == {"entities": {"entity_ids": {"light.garage": {"read": True}}}}

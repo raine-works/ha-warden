@@ -17,6 +17,7 @@ class EntityRules:
     device_ids: dict[str, str] = field(default_factory=dict)
     area_ids: dict[str, str] = field(default_factory=dict)
     domains: dict[str, str] = field(default_factory=dict)
+    label_ids: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EntityRules:

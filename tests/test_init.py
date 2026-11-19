@@ -11,7 +11,12 @@ from homeassistant.components import frontend
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
 from homeassistant.const import EVENT_PANELS_UPDATED
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import (
+    entity_registry as er,
+    issue_registry as ir,
+    label_registry as lr,
+)
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_capture_events,
@@ -599,3 +604,38 @@ async def test_prompt_script_loads_on_every_page(
     assert await hass.config_entries.async_unload(entry.entry_id)
     urls = hass.data[DATA_EXTRA_MODULE_URL].urls
     assert not any("warden-prompt.js" in url for url in urls)
+
+
+async def test_label_rule_follows_label_changes(
+    hass: HomeAssistant, warden: WardenManager, hass_ws_client: Any, make_user: Any
+) -> None:
+    """Labeling or unlabeling an entity changes access without a save."""
+    ent_reg = er.async_get(hass)
+    ent_reg.async_get_or_create("light", "test", "den", suggested_object_id="den")
+    hass.states.async_set("light.den", "on")
+    kids = lr.async_get(hass).async_create("Kids").label_id
+    kid = await make_user()
+    await create_group(
+        hass,
+        hass_ws_client,
+        name="Kids",
+        members=[kid.id],
+        entities={"label_ids": {kids: "control"}},
+    )
+    assert not kid.permissions.check_entity("light.den", "read")
+
+    ent_reg.async_update_entity("light.den", labels={kids})
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=5))
+    await hass.async_block_till_done()
+    assert kid.permissions.check_entity("light.den", "control")
+
+    ent_reg.async_update_entity("light.den", labels=set())
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=10))
+    await hass.async_block_till_done()
+    assert not kid.permissions.check_entity("light.den", "read")
+
+    client = await hass_ws_client(hass)
+    info = await ws_call(client, type="warden/info")
+    assert info["labels"] == [{"label_id": kids, "name": "Kids"}]

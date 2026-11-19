@@ -21,7 +21,7 @@ two-factor authentication.
 ## Features
 
 - **Groups** with any number of members; a person can be in several groups.
-- **Entity permissions** by entity, device, area, domain, or everything, at
+- **Entity permissions** by entity, device, area, domain, label, or everything, at
   three levels: **Read**, **Control** (includes read) and **Deny**.
 - **Dashboard access**: pick which dashboards a group can open. Others vanish
   from the sidebar, and asking for one directly returns an "access denied"
@@ -80,6 +80,7 @@ Warden is built so it can't get in the way of administrators:
 | Device | Every entity on a device |
 | Area | Every entity on devices in an area |
 | Domain | Every entity in a domain (`light`, `lock`, …) |
+| Label | Every entity with the label, on a device with it, or in an area with it |
 | Every entity | Everything |
 
 Rules from all of a person's groups add up. If any rule grants **Control**, they
@@ -90,6 +91,10 @@ the garage", or "everything except the locks", easy to express.
 > Area rules follow Home Assistant's own matching: an entity is in the area its
 > *device* is in. Area **deny** rules also catch entities assigned to the area
 > directly, so a deny never misses anything.
+
+> Labels match the way targeting a label in an action does. Home Assistant's
+> permissions have no label scope of their own, so Warden turns a label rule
+> into the entities it covers and updates that as you add or remove labels.
 
 ### Two-factor authentication
 
