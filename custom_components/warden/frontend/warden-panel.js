@@ -33,6 +33,344 @@ const esc = (value) =>
 
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString() : "");
 
+// A searchable combobox for picking an entity, device, area, domain or label.
+// Typing filters the options: every word must appear in the name, id or
+// context (area, device), so "kitchen lamp" finds light.kitchen_lamp_2.
+// Options: [{ value, label, secondary, search }]. Fires "value-changed".
+const PICKER_LIMIT = 100;
+const PICKER_PLACEHOLDERS = {
+  entity_ids: "Search entities…",
+  device_ids: "Search devices…",
+  area_ids: "Search areas…",
+  domains: "Search domains…",
+  label_ids: "Search labels…",
+};
+const PICKER_CUSTOM = {
+  entity_ids: /^[a-z0-9_]+\.[a-z0-9_]+$/,
+  domains: /^[a-z0-9_]+$/,
+};
+
+const PICKER_STYLE = `
+  :host { display: block; position: relative; min-width: 0; }
+  .box {
+    display: flex; align-items: center; gap: 4px;
+    border: 1px solid var(--divider-color); border-radius: 6px;
+    background: var(--card-background-color); padding: 0 4px 0 8px;
+  }
+  .box:focus-within { border-color: var(--warden-loud); box-shadow: 0 0 0 1px var(--warden-loud); }
+  input {
+    flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 0;
+    border: none; outline: none; background: transparent; color: var(--primary-text-color);
+  }
+  input::placeholder { color: var(--secondary-text-color); }
+  button {
+    display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+    border: none; border-radius: 50%; background: transparent; cursor: pointer;
+    color: var(--secondary-text-color);
+  }
+  button:hover { background: color-mix(in srgb, var(--primary-text-color) 8%, transparent); }
+  button svg { width: 18px; height: 18px; fill: currentColor; }
+  .list {
+    position: fixed; z-index: 10; box-sizing: border-box;
+    max-height: 320px; overflow-y: auto; overscroll-behavior: contain;
+    padding: 4px; margin: 0; list-style: none;
+    background: var(--card-background-color); color: var(--primary-text-color);
+    border: 1px solid var(--divider-color); border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+  li { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+  li.active { background: color-mix(in srgb, var(--warden-loud) 18%, transparent); }
+  li .text { min-width: 0; flex: 1; }
+  li .label { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .secondary { font-size: 12px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .check { width: 16px; flex: none; color: var(--warden-loud); }
+  li .check svg { width: 16px; height: 16px; fill: currentColor; }
+  mark { background: none; color: inherit; font-weight: 600; }
+  .note { padding: 8px 10px; font-size: 12px; color: var(--secondary-text-color); cursor: default; }
+`;
+
+const PICKER_ICONS = {
+  down: "M7,10L12,15L17,10H7Z",
+  clear: "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
+  check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
+};
+const pickerIcon = (name) => `<svg viewBox="0 0 24 24"><path d="${PICKER_ICONS[name]}"/></svg>`;
+
+class WardenPicker extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._options = [];
+    this._value = "";
+    this._placeholder = "Search…";
+    // Typed values not in the list that may be used as is (a RegExp), if any.
+    this.customPattern = null;
+    this._open = false;
+    this._query = "";
+    this._active = 0;
+    this._reposition = () => this._place();
+  }
+
+  get options() {
+    return this._options;
+  }
+
+  set options(options) {
+    this._options = options;
+    this._showValue();
+  }
+
+  get value() {
+    return this._value;
+  }
+
+  set value(value) {
+    this._value = value || "";
+    this._showValue();
+  }
+
+  set placeholder(text) {
+    this._placeholder = text;
+    if (this._input) {
+      this._input.placeholder = text;
+    }
+  }
+
+  connectedCallback() {
+    if (this._input) {
+      return;
+    }
+    this.shadowRoot.innerHTML = `
+      <style>${PICKER_STYLE}</style>
+      <div class="box">
+        <input role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off" spellcheck="false">
+        <button class="clear" tabindex="-1" title="Clear" aria-label="Clear">${pickerIcon("clear")}</button>
+        <button class="toggle" tabindex="-1" title="Show options" aria-label="Show options">${pickerIcon("down")}</button>
+      </div>
+      <ul class="list" role="listbox" hidden></ul>`;
+    this._input = this.shadowRoot.querySelector("input");
+    this._list = this.shadowRoot.querySelector(".list");
+    this._input.placeholder = this._placeholder;
+    this._showValue();
+
+    this._input.addEventListener("focus", () => {
+      this._input.select();
+      this._openList("");
+    });
+    this._input.addEventListener("input", () => this._openList(this._input.value));
+    this._input.addEventListener("keydown", (ev) => this._key(ev));
+    this._input.addEventListener("blur", () => this._closeList(true));
+    this.shadowRoot.querySelector(".toggle").addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      if (this._open) {
+        this._closeList(true);
+      } else {
+        this._input.focus();
+      }
+    });
+    this.shadowRoot.querySelector(".clear").addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      this._pick("");
+    });
+    // mousedown, not click: picking must happen before the input blurs.
+    this._list.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      const li = ev.target.closest("li[data-index]");
+      if (li) {
+        this._pickMatch(Number(li.dataset.index));
+      }
+    });
+    this._list.addEventListener("mousemove", (ev) => {
+      const li = ev.target.closest("li[data-index]");
+      if (li && Number(li.dataset.index) !== this._active) {
+        this._active = Number(li.dataset.index);
+        this._paintActive();
+      }
+    });
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("scroll", this._reposition, true);
+    window.removeEventListener("resize", this._reposition);
+  }
+
+  _showValue() {
+    if (!this._input) {
+      return;
+    }
+    const match = this.options.find((o) => o.value === this.value);
+    this._input.value = match ? match.label : this.value;
+    this.shadowRoot.querySelector(".clear").hidden = !this.value;
+  }
+
+  _openList(query) {
+    this._query = query.trim().toLowerCase();
+    this._active = 0;
+    this._open = true;
+    this._input.setAttribute("aria-expanded", "true");
+    this._renderList();
+    // Opened without a search: start at the current choice.
+    const current = this._query ? -1 : this._matches.findIndex((o) => o.value === this.value);
+    if (current > 0) {
+      this._active = current;
+      this._paintActive();
+    }
+    this._list.hidden = false;
+    this._place();
+    window.addEventListener("scroll", this._reposition, true);
+    window.addEventListener("resize", this._reposition);
+  }
+
+  _closeList(restore) {
+    this._open = false;
+    this._list.hidden = true;
+    this._input.setAttribute("aria-expanded", "false");
+    window.removeEventListener("scroll", this._reposition, true);
+    window.removeEventListener("resize", this._reposition);
+    if (restore) {
+      this._showValue();
+    }
+  }
+
+  // The list is position: fixed so cards and scrolling parents can't clip it.
+  _place() {
+    if (!this._open) {
+      return;
+    }
+    const box = this.shadowRoot.querySelector(".box").getBoundingClientRect();
+    const below = window.innerHeight - box.bottom - 8;
+    const above = box.top - 8;
+    const height = Math.min(320, Math.max(below, above));
+    this._list.style.left = `${box.left}px`;
+    this._list.style.width = `${Math.max(box.width, 280)}px`;
+    this._list.style.maxHeight = `${height}px`;
+    if (below >= Math.min(320, this._list.scrollHeight) || below >= above) {
+      this._list.style.top = `${box.bottom + 4}px`;
+      this._list.style.bottom = "";
+    } else {
+      this._list.style.top = "";
+      this._list.style.bottom = `${window.innerHeight - box.top + 4}px`;
+    }
+  }
+
+  _filter() {
+    const words = this._query.split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      return this.options;
+    }
+    const scored = [];
+    for (const option of this.options) {
+      const label = option.label.toLowerCase();
+      const hay = `${label} ${option.value.toLowerCase()} ${option.search || ""}`;
+      if (!words.every((w) => hay.includes(w))) {
+        continue;
+      }
+      // Names that start with the query first, then names containing it.
+      const score = label.startsWith(this._query) ? 0 : label.includes(this._query) ? 1 : 2;
+      scored.push([score, option]);
+    }
+    scored.sort((a, b) => a[0] - b[0]);
+    return scored.map(([, option]) => option);
+  }
+
+  _renderList() {
+    const matches = this._filter();
+    this._matches = matches.slice(0, PICKER_LIMIT);
+    const typed = this._input.value.trim();
+    this._custom =
+      this.customPattern?.test(typed) && !this.options.some((o) => o.value === typed) ? typed : null;
+    const words = this._query.split(/\s+/).filter(Boolean);
+    const highlight = (text) => {
+      let html = esc(text);
+      for (const w of words) {
+        html = html.replace(new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"), "<mark>$1</mark>");
+      }
+      return html;
+    };
+    const rows = this._matches.map(
+      (o, i) => `
+        <li role="option" data-index="${i}" aria-selected="${o.value === this.value}">
+          <span class="check">${o.value === this.value ? pickerIcon("check") : ""}</span>
+          <span class="text">
+            <div class="label">${highlight(o.label)}</div>
+            ${o.secondary ? `<div class="secondary">${highlight(o.secondary)}</div>` : ""}
+          </span>
+        </li>`,
+    );
+    if (this._custom) {
+      rows.push(`
+        <li role="option" data-index="${this._matches.length}">
+          <span class="check"></span>
+          <span class="text"><div class="label">Use “${esc(this._custom)}”</div>
+          <div class="secondary">Not in the list right now</div></span>
+        </li>`);
+    }
+    let note = "";
+    if (!rows.length) {
+      note = `<li class="note">No matches</li>`;
+    } else if (matches.length > PICKER_LIMIT) {
+      note = `<li class="note">Showing ${PICKER_LIMIT} of ${matches.length}. Keep typing to narrow it down.</li>`;
+    }
+    this._list.innerHTML = rows.join("") + note;
+    this._paintActive();
+  }
+
+  _count() {
+    return this._matches.length + (this._custom ? 1 : 0);
+  }
+
+  _paintActive() {
+    for (const li of this._list.querySelectorAll("li[data-index]")) {
+      const active = Number(li.dataset.index) === this._active;
+      li.classList.toggle("active", active);
+      if (active) {
+        li.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }
+
+  _key(ev) {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (!this._open) {
+        this._openList("");
+        return;
+      }
+      const n = this._count();
+      if (n) {
+        this._active = (this._active + (ev.key === "ArrowDown" ? 1 : n - 1)) % n;
+        this._paintActive();
+      }
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      if (this._open && this._count()) {
+        this._pickMatch(this._active);
+      }
+    } else if (ev.key === "Escape" && this._open) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this._closeList(true);
+    }
+  }
+
+  _pickMatch(index) {
+    const value = index < this._matches.length ? this._matches[index].value : this._custom;
+    this._pick(value ?? "");
+  }
+
+  _pick(value) {
+    this._closeList(false);
+    this.value = value;
+    this._showValue();
+    this._input.blur();
+    this.dispatchEvent(new CustomEvent("value-changed", { detail: { value } }));
+  }
+}
+
+if (!customElements.get("warden-picker")) {
+  customElements.define("warden-picker", WardenPicker);
+}
+
 // Colors use Home Assistant's design tokens (the ones its own buttons use),
 // which themes keep readable. --primary-color and --text-primary-color are
 // only fallbacks: themes don't promise contrast between those two.
@@ -435,7 +773,7 @@ class WardenPanel extends HTMLElement {
           <select data-rule="${i}" data-field="scope">${SCOPES.map(
             ([v, l]) => `<option value="${v}" ${r.scope === v ? "selected" : ""}>${l}</option>`,
           ).join("")}</select>
-          <input data-rule="${i}" data-field="key" list="opts-${esc(r.scope)}" value="${esc(r.key)}" placeholder="Search…">
+          <warden-picker data-rule="${i}" data-field="key"></warden-picker>
           ${levelSelect(r.level, `data-rule="${i}" data-field="level"`, false)}
           <button class="icon danger" data-action="remove-rule" data-index="${i}" title="Remove">✕</button>
         </div>
@@ -465,7 +803,6 @@ class WardenPanel extends HTMLElement {
           </div>
           ${rules}
           <button data-action="add-rule">Add rule</button>
-          ${this._datalists()}
 
           <h3>Dashboards</h3>
           ${access("dashboards", info.dashboards)}
@@ -486,53 +823,97 @@ class WardenPanel extends HTMLElement {
       </div>`;
   }
 
+  // Picker options for a rule scope. Built once per editor: there can be
+  // thousands of entities.
   _options(scope) {
-    const hass = this._hass;
-    if (scope === "entity_ids") {
-      return Object.keys(hass.states)
-        .sort()
-        .map((id) => [id, hass.states[id].attributes.friendly_name || id]);
+    this._optionCache ||= {};
+    if (!this._optionCache[scope]) {
+      this._optionCache[scope] = this._buildOptions(scope);
     }
-    if (scope === "device_ids") {
-      return Object.values(hass.devices || {})
-        .map((dev) => [dev.id, dev.name_by_user || dev.name || dev.id])
-        .sort((a, b) => a[1].localeCompare(b[1]));
-    }
-    if (scope === "label_ids") {
-      return (this._info.labels || []).map((label) => [label.label_id, label.name]);
-    }
-    if (scope === "area_ids") {
-      return Object.values(hass.areas || {})
-        .map((area) => [area.area_id, area.name])
-        .sort((a, b) => a[1].localeCompare(b[1]));
-    }
-    return [...new Set(Object.keys(hass.states).map((id) => id.split(".")[0]))]
-      .sort()
-      .map((d) => [d, d]);
+    return this._optionCache[scope];
   }
 
-  _datalists() {
-    if (!this._lists) {
-      // Built once per editor; the lists can run to thousands of entries.
-      this._lists = SCOPES.map(
-        ([scope]) =>
-          `<datalist id="opts-${scope}">${this._options(scope)
-            .map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`)
-            .join("")}</datalist>`,
-      ).join("");
+  _buildOptions(scope) {
+    const hass = this._hass;
+    const areas = hass.areas || {};
+    const devices = hass.devices || {};
+    const areaName = (id) => (id && areas[id]?.name) || "";
+    const deviceName = (dev) => (dev && (dev.name_by_user || dev.name)) || "";
+    const byLabel = (a, b) => a.label.localeCompare(b.label);
+
+    if (scope === "entity_ids") {
+      return Object.keys(hass.states)
+        .map((id) => {
+          const entry = hass.entities?.[id];
+          const device = entry?.device_id ? devices[entry.device_id] : undefined;
+          const area = areaName(entry?.area_id || device?.area_id);
+          const context = [id, area, deviceName(device)].filter(Boolean);
+          return {
+            value: id,
+            label: hass.states[id].attributes.friendly_name || id,
+            secondary: [...new Set(context)].join(" · "),
+            search: context.join(" ").toLowerCase(),
+          };
+        })
+        .sort(byLabel);
     }
-    return this._lists;
+    if (scope === "device_ids") {
+      return Object.values(devices)
+        .map((dev) => {
+          const context = [areaName(dev.area_id), dev.manufacturer, dev.model].filter(Boolean);
+          return {
+            value: dev.id,
+            label: deviceName(dev) || dev.id,
+            secondary: context.join(" · "),
+            search: context.join(" ").toLowerCase(),
+          };
+        })
+        .sort(byLabel);
+    }
+    if (scope === "area_ids") {
+      const floors = hass.floors || {};
+      return Object.values(areas)
+        .map((area) => {
+          const floor = (area.floor_id && floors[area.floor_id]?.name) || "";
+          return {
+            value: area.area_id,
+            label: area.name,
+            secondary: floor,
+            search: floor.toLowerCase(),
+          };
+        })
+        .sort(byLabel);
+    }
+    if (scope === "label_ids") {
+      return (this._info.labels || []).map((label) => ({
+        value: label.label_id,
+        label: label.name,
+        secondary: "",
+      }));
+    }
+    const counts = {};
+    for (const id of Object.keys(hass.states)) {
+      const domain = id.split(".")[0];
+      counts[domain] = (counts[domain] || 0) + 1;
+    }
+    return Object.keys(counts)
+      .sort()
+      .map((domain) => ({
+        value: domain,
+        label: domain,
+        secondary: `${counts[domain]} ${counts[domain] === 1 ? "entity" : "entities"}`,
+      }));
   }
 
   _describeKey(scope, key) {
     if (!key) {
       return "";
     }
-    const match = this._options(scope).find(([v]) => v === key);
+    const match = this._options(scope).find((o) => o.value === key);
     if (!match) {
-      return scope === "entity_ids" ? "Entity not currently available" : "Unknown — pick from the list";
+      return scope === "entity_ids" ? `${key} (not currently available)` : `${key} (not found)`;
     }
-    return match[1] === key ? "" : match[1];
+    return scope === "domains" ? "" : match.secondary || "";
   }
 
   _openEditor(group) {
@@ -564,7 +945,7 @@ class WardenPanel extends HTMLElement {
       dashboards: { all: g.dashboards.all, items: [...g.dashboards.items] },
       panels: { all: g.panels.all, items: [...g.panels.items] },
     };
-    this._lists = null;
+    this._optionCache = null;
     this._error = "";
     this._render();
   }
@@ -634,7 +1015,19 @@ class WardenPanel extends HTMLElement {
       d[el.dataset.all].all = el.checked;
       this._render();
     });
-    on("[data-rule]", (el) => {
+    for (const picker of root.querySelectorAll("warden-picker[data-rule]")) {
+      const rule = d.rules[Number(picker.dataset.rule)];
+      picker.options = this._options(rule.scope);
+      picker.value = rule.key;
+      picker.placeholder = PICKER_PLACEHOLDERS[rule.scope];
+      // An entity may not exist yet, and a domain can be typed in full.
+      picker.customPattern = PICKER_CUSTOM[rule.scope] || null;
+      picker.addEventListener("value-changed", (ev) => {
+        rule.key = ev.detail.value;
+        this._render();
+      });
+    }
+    on("select[data-rule], input[data-rule]", (el) => {
       const rule = d.rules[Number(el.dataset.rule)];
       rule[el.dataset.field] = el.value;
       if (el.dataset.field === "scope") {
