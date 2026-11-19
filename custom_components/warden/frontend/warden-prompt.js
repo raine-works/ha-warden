@@ -333,7 +333,13 @@
       if (ph.qr_code) {
         // The QR code is an SVG from Home Assistant; as an <img> it can't run
         // anything, and the white box keeps it scannable in dark themes.
-        const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(ph.qr_code)}`;
+        // Home Assistant strips the SVG namespace (its own page inlines the
+        // markup), and without it the browser won't draw an image.
+        let svg = ph.qr_code;
+        if (!/^<svg[^>]*\sxmlns=/.test(svg)) {
+          svg = svg.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+        }
+        const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
         intro = `
           <p>Scan this QR code with an authenticator app, such as Google
           Authenticator, Microsoft Authenticator, 1Password or Authy.</p>
