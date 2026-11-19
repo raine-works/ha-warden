@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.log
+# local Home Assistant config used for manual testing
+config/
+
+# personal Claude Code settings
+.claude/settings.local.json

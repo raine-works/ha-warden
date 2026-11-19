@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Warden",
+        "description": "Warden adds groups, fine-grained permissions and required two-factor authentication for Home Assistant users. After setup, configure it from the **Warden** panel in the sidebar.\n\nThe owner account is never restricted, so you can't lock yourself out."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Warden is already set up."
+    }
+  },
+  "issues": {
+    "no_mfa_module": {
+      "title": "Two-factor authentication can't be enforced",
+      "description": "Warden is set to require two-factor authentication, but no two-factor module is loaded, so users can't set one up. Warden won't restrict anyone until one is available.\n\nAdd a module (for example `totp`) under `auth_mfa_modules` in `configuration.yaml` and restart Home Assistant."
+    }
+  }
+}

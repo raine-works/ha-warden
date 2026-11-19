@@ -1,0 +1,6 @@
+# Runs the integration inside Home Assistant. The plugin pins the Home Assistant
+# version; the frontend package is what that version's frontend integration
+# requires (Warden depends on it for its panels).
+pytest-homeassistant-custom-component==0.13.375
+home-assistant-frontend==20260930.5
+ruff

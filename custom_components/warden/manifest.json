@@ -1,0 +1,14 @@
+{
+  "domain": "warden",
+  "name": "Warden",
+  "codeowners": ["@raine-works"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "lovelace", "panel_custom", "websocket_api"],
+  "documentation": "https://github.com/raine-works/ha-warden",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/raine-works/ha-warden/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
