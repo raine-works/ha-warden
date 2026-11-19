@@ -31,8 +31,16 @@ const esc = (value) =>
 
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString() : "");
 
+// Colors use Home Assistant's design tokens (the ones its own buttons use),
+// which themes keep readable. --primary-color and --text-primary-color are
+// only fallbacks: themes don't promise contrast between those two.
 const STYLE = `
   :host {
+    --warden-loud: var(--ha-color-fill-primary-loud-resting, var(--primary-color));
+    --warden-loud-hover: var(--ha-color-fill-primary-loud-hover, var(--warden-loud));
+    --warden-on-loud: var(--ha-color-on-primary-loud, #fff);
+    --warden-quiet: var(--ha-color-fill-primary-normal-resting, var(--secondary-background-color));
+    --warden-on-quiet: var(--ha-color-on-primary-normal, var(--primary-text-color));
     display: block;
     min-height: 100%;
     background: var(--primary-background-color);
@@ -52,7 +60,7 @@ const STYLE = `
   main { max-width: 1000px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
   .tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
   .tabs button { border-radius: 18px; }
-  .tabs button.active { background: var(--primary-color); color: var(--text-primary-color, white); }
+  .tabs button.active { background: var(--warden-quiet); color: var(--warden-on-quiet); border-color: transparent; font-weight: 500; }
   .card {
     background: var(--card-background-color);
     border-radius: var(--ha-card-border-radius, 12px);
@@ -73,7 +81,9 @@ const STYLE = `
     color: var(--primary-text-color);
     cursor: pointer;
   }
-  button.primary { background: var(--primary-color); color: var(--text-primary-color, white); border-color: transparent; }
+  button.primary { background: var(--warden-loud); color: var(--warden-on-loud); border-color: transparent; }
+  button.primary:hover { background: var(--warden-loud-hover); }
+  input[type="checkbox"] { accent-color: var(--warden-loud); }
   button.danger { color: var(--error-color); }
   button.icon { padding: 4px 8px; }
   input[type="text"], input[type="number"], input:not([type]), select, textarea {
@@ -101,7 +111,8 @@ const STYLE = `
   .muted { color: var(--secondary-text-color); font-size: 13px; }
   .chip {
     display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 10px;
-    background: var(--secondary-background-color); margin: 2px 4px 2px 0;
+    background: color-mix(in srgb, var(--primary-text-color) 10%, transparent);
+    margin: 2px 4px 2px 0;
   }
   .chip.warn { background: var(--warning-color); color: white; }
   .chip.bad { background: var(--error-color); color: white; }

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Warden brand icon. custom_components/warden/brand/*.png are rendered from this. -->
+  <rect width="512" height="512" rx="115" fill="#3c3f8f"/>
+  <g fill="none" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 96 C 300 126 350 138 396 138 L 396 252 C 396 340 336 398 256 428 C 176 398 116 340 116 252 L 116 138 C 162 138 212 126 256 96 Z"/>
+    <circle cx="256" cy="212" r="38"/>
+    <path d="M186 338 C 190 292 220 272 256 272 C 292 272 322 292 326 338"/>
+  </g>
+</svg>
