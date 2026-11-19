@@ -300,7 +300,9 @@ class WardenPanel extends HTMLElement {
         <p class="hint">Users in a group lose their standard Home Assistant
         role and get exactly what their groups allow. A user in several groups
         gets everything any of them allows, minus anything any of them denies.
-        The owner is never restricted.</p>
+        The owner is never restricted, and Home Assistant administrators keep
+        full access: only a group's 2FA requirement applies to them. To
+        restrict someone, turn off Administrator under Settings → People.</p>
         ${rows || `<p class="muted">No groups yet.</p>`}
         <div class="actions"><button class="primary" data-action="new">Add group</button></div>
       </div>`;
@@ -312,10 +314,15 @@ class WardenPanel extends HTMLElement {
     const rows = this._info.users
       .map((u) => {
         const groups = groupsOf(u.id);
-        let role = u.is_owner ? "Owner" : u.is_admin ? "Administrator" : "User";
-        if (u.managed && !u.is_admin) {
-          role = "Managed";
-        }
+        const role = u.is_owner
+          ? "Owner"
+          : u.native_admin
+            ? "Administrator"
+            : u.is_admin
+              ? "Administrator (Warden group)"
+              : u.managed
+                ? "Managed"
+                : "User";
         const mfaClass = { compliant: "good", grace: "warn", restricted: "bad", unenforceable: "bad" }[u.mfa] || "";
         const mfa = u.is_owner
           ? `<span class="muted">${u.mfa_modules.length ? "Enrolled" : "Owner (exempt)"}</span>`
@@ -378,7 +385,9 @@ class WardenPanel extends HTMLElement {
         (u) =>
           `<label class="row"><input type="checkbox" data-member="${esc(u.id)}" ${
             d.members.includes(u.id) ? "checked" : ""
-          }> ${esc(u.name)}</label>`,
+          }> ${esc(u.name)}${
+            u.native_admin ? ` <span class="muted" title="Home Assistant administrators keep full access; only this group's 2FA requirement applies.">(administrator)</span>` : ""
+          }</label>`,
       )
       .join("");
     const access = (kind, items) => {

@@ -107,6 +107,8 @@ class UserRecord:
     original_group_ids: list[str] | None = None
     # When the user first became subject to a 2FA requirement (ISO 8601).
     mfa_required_since: str | None = None
+    # The groups Warden last gave the user, to spot changes made elsewhere.
+    applied_group_ids: list[str] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> UserRecord:
@@ -114,6 +116,7 @@ class UserRecord:
         return cls(
             original_group_ids=data.get("original_group_ids"),
             mfa_required_since=data.get("mfa_required_since"),
+            applied_group_ids=data.get("applied_group_ids"),
         )
 
     @property

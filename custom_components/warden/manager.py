@@ -37,7 +37,7 @@ from .const import (
     MFA_RESTRICTED,
     MFA_UNENFORCEABLE,
 )
-from .models import AccessList, Settings, UiAccess, WardenGroup
+from .models import AccessList, Settings, UiAccess, UserRecord, WardenGroup
 from .policy import DENY_ALL_POLICY, compile_policy
 from .store import WardenStore
 
@@ -53,10 +53,21 @@ class UserStatus:
 
     managed: bool
     admin: bool
+    # An administrator in Home Assistant itself; group rules don't apply.
+    native_admin: bool
     mfa: str
     mfa_deadline: datetime | None
     # None means Warden doesn't limit which dashboards and panels they open.
     ui: UiAccess | None
+
+
+class LockoutError(Exception):
+    """A change would take away the acting administrator's own access."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Initialize the error."""
+        super().__init__(message)
+        self.code = code
 
 
 def manageable(user: User) -> bool:
@@ -202,27 +213,37 @@ class WardenManager:
         mfa, deadline = await self._async_mfa_state(user, groups)
         managed = bool(groups)
         restricted = mfa == MFA_RESTRICTED
-        wants_admin = any(group.admin for group in groups)
-        admin = wants_admin and not restricted
 
-        if not managed and not restricted:
+        record = self.store.users.get(user.id)
+        current = [group.id for group in user.groups]
+        if (
+            record is not None
+            and record.original_group_ids is not None
+            and _changed_elsewhere(record, current)
+        ):
+            # Someone changed this user's groups outside Warden, for example
+            # with the administrator toggle under Settings → People. That is
+            # now their own role: it decides whether they're an admin, and
+            # it's what they get back when Warden lets go of them.
+            record.original_group_ids = current
+            self.store.async_schedule_save()
+        native_admin = self.is_native_admin(user)
+
+        if not restricted and (native_admin or not managed):
+            # Home Assistant administrators keep their own groups and full
+            # access; group rules never apply to them. Only 2FA does.
             await self._async_release(user)
-            self.status[user.id] = UserStatus(False, user.is_admin, mfa, deadline, None)
+            self.status[user.id] = UserStatus(
+                managed, user.is_admin, native_admin, mfa, deadline, None
+            )
             return
 
         record = self.store.record(user.id)
-        current = [group.id for group in user.groups]
         if record.original_group_ids is None:
             record.original_group_ids = current
             self.store.async_schedule_save()
-        elif not any(is_warden_group(g) for g in current) and not (
-            wants_admin and current == [GROUP_ID_ADMIN]
-        ):
-            # Someone changed this user's groups outside Warden (for example
-            # with the administrator toggle). Restore that when releasing them.
-            record.original_group_ids = current
-            self.store.async_schedule_save()
 
+        admin = not restricted and any(group.admin for group in groups)
         snapshot = False
         if admin:
             desired = [GROUP_ID_ADMIN]
@@ -244,6 +265,9 @@ class WardenManager:
             self._snapshot_users.discard(user.id)
 
         await self.bridge.async_set_user_groups(user, desired)
+        if record.applied_group_ids != desired:
+            record.applied_group_ids = desired
+            self.store.async_schedule_save()
 
         if restricted:
             ui: UiAccess | None = UiAccess(AccessList(), AccessList())
@@ -254,7 +278,9 @@ class WardenManager:
                 _union(group.dashboards for group in groups),
                 _union(group.panels for group in groups),
             )
-        self.status[user.id] = UserStatus(managed, admin, mfa, deadline, ui)
+        self.status[user.id] = UserStatus(
+            managed, admin, native_admin, mfa, deadline, ui
+        )
 
     async def _async_release(self, user: User) -> None:
         """Give a user back the groups they had before Warden took over."""
@@ -269,8 +295,21 @@ class WardenManager:
         ] or [GROUP_ID_USER]
         await self.bridge.async_set_user_groups(user, restore)
         record.original_group_ids = None
+        record.applied_group_ids = None
         self.store.async_schedule_save()
         LOGGER.info("Released %s from Warden", user.name)
+
+    @callback
+    def is_native_admin(self, user: User) -> bool:
+        """Return whether Home Assistant itself makes the user an administrator.
+
+        That is the role they had before Warden took over (or have now, if
+        Warden hasn't), not one granted by a Warden admin group.
+        """
+        record = self.store.users.get(user.id)
+        if record is not None and record.original_group_ids is not None:
+            return GROUP_ID_ADMIN in record.original_group_ids
+        return user.is_admin
 
     async def _async_mfa_state(
         self, user: User, groups: list[WardenGroup]
@@ -283,14 +322,23 @@ class WardenManager:
             if record.mfa_required_since is not None:
                 record.mfa_required_since = None
                 self.store.async_schedule_save()
-            return MFA_EXEMPT, None
-
-        # The clock starts the first time the requirement applies and keeps
-        # running after enrollment, so disabling 2FA later gets no new grace.
-        if record.mfa_required_since is None:
+        elif record.mfa_required_since is None:
+            # The clock starts the first time the requirement applies and keeps
+            # running after enrollment, so disabling 2FA later gets no new grace.
             record.mfa_required_since = dt_util.utcnow().isoformat()
             self.store.async_schedule_save()
-        since = dt_util.parse_datetime(record.mfa_required_since) or dt_util.utcnow()
+        return await self._async_evaluate_mfa(
+            user, required, record.mfa_required_since, settings
+        )
+
+    async def _async_evaluate_mfa(
+        self, user: User, required: bool, since_iso: str | None, settings: Settings
+    ) -> tuple[str, datetime | None]:
+        if not required:
+            return MFA_EXEMPT, None
+        since = (
+            dt_util.parse_datetime(since_iso) if since_iso else None
+        ) or dt_util.utcnow()
         deadline = since + timedelta(days=settings.mfa_grace_days)
 
         if await self.hass.auth.async_get_enabled_mfa(user):
@@ -352,42 +400,87 @@ class WardenManager:
 
     # ---------------------------------------------------------------- changes
 
-    async def async_create_group(self, data: dict[str, Any]) -> WardenGroup:
+    async def async_create_group(
+        self, data: dict[str, Any], actor: User | None = None
+    ) -> WardenGroup:
         """Create a group."""
         group = WardenGroup.from_dict({**data, "id": uuid.uuid4().hex})
-        self.store.groups[group.id] = group
-        await self._async_changed()
+        await self._async_apply({**self.store.groups, group.id: group}, None, actor)
         return group
 
     async def async_update_group(
-        self, group_id: str, data: dict[str, Any]
+        self, group_id: str, data: dict[str, Any], actor: User | None = None
     ) -> WardenGroup:
         """Replace a group's fields with those given."""
         group = WardenGroup.from_dict(
             {**self.store.groups[group_id].to_dict(), **data, "id": group_id}
         )
-        self.store.groups[group_id] = group
-        await self._async_changed()
+        await self._async_apply({**self.store.groups, group_id: group}, None, actor)
         return group
 
-    async def async_delete_group(self, group_id: str) -> None:
+    async def async_delete_group(
+        self, group_id: str, actor: User | None = None
+    ) -> None:
         """Delete a group."""
-        del self.store.groups[group_id]
-        await self._async_changed()
+        groups = {k: v for k, v in self.store.groups.items() if k != group_id}
+        await self._async_apply(groups, None, actor)
 
-    async def async_update_settings(self, data: dict[str, Any]) -> Settings:
+    async def async_update_settings(
+        self, data: dict[str, Any], actor: User | None = None
+    ) -> Settings:
         """Change global settings."""
         settings = self.store.settings
-        self.store.settings = Settings(
+        settings = Settings(
             require_mfa_all=data.get("require_mfa_all", settings.require_mfa_all),
             mfa_grace_days=data.get("mfa_grace_days", settings.mfa_grace_days),
         )
-        await self._async_changed()
-        return self.store.settings
+        await self._async_apply(None, settings, actor)
+        return settings
 
-    async def _async_changed(self) -> None:
+    async def _async_apply(
+        self,
+        groups: dict[str, WardenGroup] | None,
+        settings: Settings | None,
+        actor: User | None,
+    ) -> None:
+        """Save a new configuration, unless it would lock out the actor."""
+        groups = self.store.groups if groups is None else groups
+        settings = self.store.settings if settings is None else settings
+        if actor is not None:
+            await self._async_check_actor(actor, groups, settings)
+        self.store.groups = groups
+        self.store.settings = settings
         self.store.async_schedule_save()
         await self.async_reconcile_all()
+
+    async def _async_check_actor(
+        self, actor: User, groups: dict[str, WardenGroup], settings: Settings
+    ) -> None:
+        """Refuse a change that would take away the actor's own admin access.
+
+        An admin who removes their own admin group, or requires 2FA they
+        haven't set up with no grace period, would be cut off mid-change.
+        """
+        if not manageable(actor):
+            return
+        member_of = [g for g in groups.values() if actor.id in g.members]
+        if not self.is_native_admin(actor) and not any(g.admin for g in member_of):
+            raise LockoutError(
+                "lose_admin",
+                "This change would take away your own administrator access. "
+                "Ask the owner or another administrator to make it.",
+            )
+        required = settings.require_mfa_all or any(g.require_mfa for g in member_of)
+        record = self.store.users.get(actor.id)
+        since = record.mfa_required_since if record else None
+        mfa, _ = await self._async_evaluate_mfa(actor, required, since, settings)
+        if mfa == MFA_RESTRICTED:
+            raise LockoutError(
+                "requires_your_mfa",
+                "This change would lock you out right away, because you "
+                "haven't set up two-factor authentication. Set it up on your "
+                "profile's Security page first, or allow a grace period.",
+            )
 
     # ----------------------------------------------------------------- lookup
 
@@ -409,6 +502,14 @@ class WardenManager:
 def _is_new_entity(data: Any) -> bool:
     """Match state changes that mean an entity just appeared."""
     return data["old_state"] is None
+
+
+def _changed_elsewhere(record: UserRecord, current: list[str]) -> bool:
+    """Return whether a managed user's groups were changed outside Warden."""
+    if record.applied_group_ids is not None:
+        return sorted(current) != sorted(record.applied_group_ids)
+    # Records from before 0.1.2 don't say what Warden applied.
+    return not any(is_warden_group(g) for g in current) and current != [GROUP_ID_ADMIN]
 
 
 def _union(lists: Any) -> AccessList:

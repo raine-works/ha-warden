@@ -61,6 +61,7 @@ class WardenStore:
                 user_id: {
                     "original_group_ids": record.original_group_ids,
                     "mfa_required_since": record.mfa_required_since,
+                    "applied_group_ids": record.applied_group_ids,
                 }
                 for user_id, record in self.users.items()
                 if not record.is_empty

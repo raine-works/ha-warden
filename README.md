@@ -51,6 +51,25 @@ own, everywhere it already checks.
 - **The owner account is never managed or restricted**, so there is always a
   way back in.
 
+### Administrators
+
+Warden is built so it can't get in the way of administrators:
+
+- **Home Assistant administrators keep full access.** If someone is an
+  administrator under **Settings → People**, their groups' entity, dashboard
+  and panel rules don't apply to them. Only a group's 2FA requirement does.
+  To restrict someone, turn off **Administrator** for them there. Turning it
+  back on lifts the restriction.
+- **You can't lock yourself out.** Warden refuses a change that would take away
+  your own admin access, such as removing yourself from the group that makes
+  you an admin. It also refuses to require 2FA with no grace period while you
+  haven't set it up yourself. The owner or another admin can still make the
+  change.
+- **Required 2FA does apply to administrators.** That is deliberate: admin
+  accounts matter most. An admin who misses the grace period can only reach
+  their profile until they enroll, and then gets admin straight back. The owner
+  is always exempt.
+
 ### Rules
 
 | Scope | Matches |
@@ -78,7 +97,7 @@ Turn on **Require two-factor authentication** in a group, or for everyone on the
 | State | Meaning |
 | --- | --- |
 | Grace period | 2FA required, not set up yet. Full access; the **Account security** page shows the deadline. |
-| Restricted | Grace period over. No entities, dashboards or panels except their profile, where they can set up 2FA. |
+| Restricted | Grace period over. No entities, dashboards or panels except their profile, where they can set up 2FA. Administrators lose admin rights until they enroll. |
 | Enrolled | 2FA set up. Normal access. |
 
 The grace clock starts the first time a requirement applies to someone and

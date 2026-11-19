@@ -17,7 +17,7 @@ from .const import (
     PANEL_ADMIN,
     SCOPES,
 )
-from .manager import UserStatus, WardenManager, manageable
+from .manager import LockoutError, UserStatus, WardenManager, manageable
 
 ENTITY_RULES_SCHEMA = vol.Schema(
     {
@@ -64,10 +64,17 @@ def _manager(
 
 def _status_dict(status: UserStatus | None) -> dict[str, Any]:
     if status is None:
-        return {"managed": False, "admin": False, "mfa": None, "mfa_deadline": None}
+        return {
+            "managed": False,
+            "admin": False,
+            "native_admin": False,
+            "mfa": None,
+            "mfa_deadline": None,
+        }
     return {
         "managed": status.managed,
         "admin": status.admin,
+        "native_admin": status.native_admin,
         "mfa": status.mfa,
         "mfa_deadline": status.mfa_deadline.isoformat()
         if status.mfa_deadline
@@ -166,7 +173,11 @@ async def ws_create_group(
     if not await _async_validate_members(hass, connection, msg):
         return
     data = {k: v for k, v in msg.items() if k not in ("id", "type")}
-    group = await manager.async_create_group(data)
+    try:
+        group = await manager.async_create_group(data, connection.user)
+    except LockoutError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
     connection.send_result(msg["id"], group.to_dict())
 
 
@@ -192,7 +203,11 @@ async def ws_update_group(
     if not await _async_validate_members(hass, connection, msg):
         return
     data = {k: v for k, v in msg.items() if k not in ("id", "type", "group_id")}
-    group = await manager.async_update_group(msg["group_id"], data)
+    try:
+        group = await manager.async_update_group(msg["group_id"], data, connection.user)
+    except LockoutError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
     connection.send_result(msg["id"], group.to_dict())
 
 
@@ -210,7 +225,11 @@ async def ws_delete_group(
     if msg["group_id"] not in manager.store.groups:
         connection.send_error(msg["id"], "not_found", "Group not found")
         return
-    await manager.async_delete_group(msg["group_id"])
+    try:
+        await manager.async_delete_group(msg["group_id"], connection.user)
+    except LockoutError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
     connection.send_result(msg["id"])
 
 
@@ -229,7 +248,11 @@ async def ws_update_settings(
     """Change global settings."""
     if (manager := _manager(hass, connection, msg)) is None:
         return
-    settings = await manager.async_update_settings(msg)
+    try:
+        settings = await manager.async_update_settings(msg, connection.user)
+    except LockoutError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
     connection.send_result(
         msg["id"],
         {

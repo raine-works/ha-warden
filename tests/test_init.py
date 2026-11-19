@@ -6,12 +6,21 @@ from typing import Any
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.auth.auth_store import AuthStore
 from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
+from homeassistant.auth.models import Group as AuthGroup
 from homeassistant.components import frontend
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
-from custom_components.warden.const import DOMAIN, PANEL_SECURITY
+from custom_components.warden.const import (
+    DOMAIN,
+    PANEL_SECURITY,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+)
 from custom_components.warden.manager import WardenManager
 
 from .conftest import ws_call
@@ -92,22 +101,168 @@ async def test_admin_group(
     assert user.is_admin
 
 
-async def test_external_group_change_is_reverted_and_remembered(
+async def test_external_group_change_is_reverted(
     hass: HomeAssistant, warden: WardenManager, hass_ws_client: Any, make_user: Any
 ) -> None:
     """Changing a managed user's groups elsewhere doesn't escape Warden."""
     kid = await make_user()
-    group = await create_group(hass, hass_ws_client, name="Kids", members=[kid.id])
+    await create_group(hass, hass_ws_client, name="Kids", members=[kid.id])
 
-    await hass.auth.async_update_user(kid, group_ids=[GROUP_ID_ADMIN])
+    await hass.auth.async_update_user(kid, group_ids=[GROUP_ID_USER])
     await hass.async_block_till_done()
     assert group_ids(kid) == [f"warden-{kid.id}"]
 
-    # ...but it is what they get back when Warden releases them.
+
+async def test_native_admin_overrides_group_rules(
+    hass: HomeAssistant, warden: WardenManager, hass_ws_client: Any, make_user: Any
+) -> None:
+    """A Home Assistant administrator keeps full access in any group."""
+    hass.states.async_set("lock.front", "locked")
+    admin = await make_user("Admin", [GROUP_ID_ADMIN])
+    group = await create_group(
+        hass,
+        hass_ws_client,
+        name="Kids",
+        members=[admin.id],
+        entities={"domains": {"light": "read"}},
+        dashboards={"items": []},
+        panels={"items": []},
+    )
+    assert group_ids(admin) == [GROUP_ID_ADMIN]
+    assert admin.is_admin
+    assert admin.permissions.check_entity("lock.front", "control")
+    assert warden.ui_access(admin) is None
+    assert warden.status[admin.id].native_admin
+
+    # Turning off Administrator under Settings → People applies the rules...
+    await hass.auth.async_update_user(admin, group_ids=[GROUP_ID_USER])
+    await hass.async_block_till_done()
+    assert group_ids(admin) == [f"warden-{admin.id}"]
+    assert not admin.permissions.check_entity("lock.front", "read")
+
+    # ...and turning it back on lifts them again.
+    await hass.auth.async_update_user(admin, group_ids=[GROUP_ID_ADMIN])
+    await hass.async_block_till_done()
+    assert group_ids(admin) == [GROUP_ID_ADMIN]
+    assert admin.permissions.check_entity("lock.front", "control")
+
+    # Leaving the group changes nothing for them.
     client = await hass_ws_client(hass)
     await ws_call(client, type="warden/group/update", group_id=group["id"], members=[])
     await hass.async_block_till_done()
-    assert group_ids(kid) == [GROUP_ID_ADMIN]
+    assert group_ids(admin) == [GROUP_ID_ADMIN]
+
+
+async def test_admin_demoted_by_older_version_is_restored(
+    hass: HomeAssistant, hass_owner_user: Any, hass_storage: dict, make_user: Any
+) -> None:
+    """Admins that 0.1.1 put on a group policy get admin back on upgrade."""
+    admin = await make_user("Admin", [GROUP_ID_ADMIN])
+    hass.auth._store._groups[f"warden-{admin.id}"] = AuthGroup(
+        id=f"warden-{admin.id}", name="Warden: Admin", policy={"entities": {}}
+    )
+    await hass.auth.async_update_user(admin, group_ids=[f"warden-{admin.id}"])
+    assert not admin.is_admin
+    hass_storage[STORAGE_KEY] = {
+        "version": STORAGE_VERSION,
+        "key": STORAGE_KEY,
+        "data": {
+            "groups": [{"id": "g", "name": "Kids", "members": [admin.id]}],
+            "users": {admin.id: {"original_group_ids": [GROUP_ID_ADMIN]}},
+        },
+    }
+    entry = MockConfigEntry(domain=DOMAIN, title="Warden")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert group_ids(admin) == [GROUP_ID_ADMIN]
+    assert f"warden-{admin.id}" not in hass.auth._store._groups
+
+
+async def test_admin_cannot_remove_own_admin_access(
+    hass: HomeAssistant,
+    warden: WardenManager,
+    hass_ws_client: Any,
+    make_user: Any,
+    user_ws: Any,
+) -> None:
+    """An admin whose role comes from a Warden group can't revoke it."""
+    parent = await make_user("Parent")
+    group = await create_group(
+        hass, hass_ws_client, name="Parents", admin=True, members=[parent.id]
+    )
+    assert parent.is_admin
+    client = await user_ws(parent)
+    for msg in (
+        {"type": "warden/group/update", "group_id": group["id"], "members": []},
+        {"type": "warden/group/update", "group_id": group["id"], "admin": False},
+        {"type": "warden/group/delete", "group_id": group["id"]},
+    ):
+        await client.send_json_auto_id(msg)
+        response = await client.receive_json()
+        assert response["error"]["code"] == "lose_admin", msg
+    await hass.async_block_till_done()
+    assert parent.is_admin
+    assert group["id"] in warden.store.groups
+
+    # Another admin can still make the change.
+    other = await hass_ws_client(hass)
+    await ws_call(other, type="warden/group/delete", group_id=group["id"])
+    await hass.async_block_till_done()
+    assert not parent.is_admin
+
+
+async def test_admin_cannot_require_2fa_they_lack_without_grace(
+    hass: HomeAssistant,
+    mfa_module: str,
+    warden: WardenManager,
+    hass_ws_client: Any,
+    hass_admin_user: Any,
+) -> None:
+    """Requiring 2FA with no grace period can't lock out the admin doing it."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {"type": "warden/settings/update", "require_mfa_all": True, "mfa_grace_days": 0}
+    )
+    response = await client.receive_json()
+    assert response["error"]["code"] == "requires_your_mfa"
+    assert not warden.store.settings.require_mfa_all
+
+    # With a grace period they have time to enroll, so it's allowed.
+    await ws_call(
+        client, type="warden/settings/update", require_mfa_all=True, mfa_grace_days=7
+    )
+    await hass.async_block_till_done()
+    assert warden.status[hass_admin_user.id].mfa == "grace"
+    assert hass_admin_user.is_admin
+
+
+async def test_admin_missing_2fa_is_restricted_then_restored(
+    hass: HomeAssistant,
+    mfa_module: str,
+    warden: WardenManager,
+    hass_ws_client: Any,
+    make_user: Any,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Required 2FA applies to admins; enrolling gives admin straight back."""
+    admin = await make_user("Admin", [GROUP_ID_ADMIN])
+    await create_group(
+        hass, hass_ws_client, name="IT", members=[admin.id], require_mfa=True
+    )
+    assert admin.is_admin
+
+    freezer.tick(timedelta(days=8))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert warden.status[admin.id].mfa == "restricted"
+    assert not admin.is_admin
+
+    await hass.auth.get_auth_mfa_module(mfa_module).async_setup_user(
+        admin.id, {"pin": "123456"}
+    )
+    await hass.async_block_till_done()
+    assert group_ids(admin) == [GROUP_ID_ADMIN]
 
 
 async def test_owner_cannot_be_added(
@@ -255,11 +410,16 @@ async def test_require_mfa_for_everyone(
     warden: WardenManager,
     hass_ws_client: Any,
     hass_owner_user: Any,
+    hass_admin_user: Any,
     make_user: Any,
 ) -> None:
     """The global setting covers ungrouped users, and spares the owner."""
     hass.states.async_set("light.den", "on")
     user = await make_user("Guest")
+    # The admin making the change must have 2FA, or they'd lock themselves out.
+    await hass.auth.get_auth_mfa_module(mfa_module).async_setup_user(
+        hass_admin_user.id, {"pin": "123456"}
+    )
     client = await hass_ws_client(hass)
     await ws_call(
         client, type="warden/settings/update", require_mfa_all=True, mfa_grace_days=0
