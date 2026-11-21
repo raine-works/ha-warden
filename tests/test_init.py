@@ -360,6 +360,79 @@ async def test_dashboard_and_panel_guards(
     assert PANEL_SECURITY not in admin_panels
 
 
+async def test_restricted_user_always_has_a_landing_page(
+    hass: HomeAssistant,
+    warden: WardenManager,
+    hass_ws_client: Any,
+    make_user: Any,
+    user_ws: Any,
+) -> None:
+    """A group allowing one dashboard and no panels, while the system default is a
+    dashboard it can't open (the wall panels' case): the frontend fell back to the
+    home panel, then notfound, found neither, and crashed on every render. The
+    user's default becomes their first allowed dashboard, and notfound stays."""
+    admin = await hass_ws_client(hass)
+    for url_path in ("dashboard-kitchen", "dashboard-family"):
+        await ws_call(
+            admin, type="lovelace/dashboards/create", url_path=url_path, title=url_path
+        )
+    await ws_call(
+        admin,
+        type="frontend/set_system_data",
+        key="core",
+        value={"default_panel": "dashboard-family", "onboarded_version": "1"},
+    )
+    panel = await make_user()
+    await create_group(
+        hass,
+        hass_ws_client,
+        name="Wall Panels",
+        members=[panel.id],
+        dashboards={"items": ["dashboard-kitchen"]},
+    )
+
+    client = await user_ws(panel)
+    panels = await ws_call(client, type="get_panels")
+    assert "dashboard-kitchen" in panels
+    assert "dashboard-family" not in panels
+    assert "notfound" in panels
+
+    data = await ws_call(client, type="frontend/get_system_data", key="core")
+    assert data["value"] == {
+        "default_panel": "dashboard-kitchen",
+        "onboarded_version": "1",
+    }
+
+    await client.send_json_auto_id(
+        {"type": "frontend/subscribe_system_data", "key": "core"}
+    )
+    event = await client.receive_json()
+    assert event["event"]["value"]["default_panel"] == "dashboard-kitchen"
+    assert (await client.receive_json())["success"]
+
+    # Later changes are rewritten on the same subscription
+    await ws_call(
+        admin,
+        type="frontend/set_system_data",
+        key="core",
+        value={"default_panel": "dashboard-kitchen"},
+    )
+    event = await client.receive_json()
+    assert event["event"]["value"]["default_panel"] == "dashboard-kitchen"
+
+    # Admins see the system's own default
+    data = await ws_call(admin, type="frontend/get_system_data", key="core")
+    assert data["value"]["default_panel"] == "dashboard-kitchen"
+    await ws_call(
+        admin,
+        type="frontend/set_system_data",
+        key="core",
+        value={"default_panel": "dashboard-family"},
+    )
+    data = await ws_call(admin, type="frontend/get_system_data", key="core")
+    assert data["value"]["default_panel"] == "dashboard-family"
+
+
 async def test_mfa_grace_then_restriction(
     hass: HomeAssistant,
     mfa_module: str,
