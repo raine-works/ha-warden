@@ -195,6 +195,27 @@ Warden writes them through a small internal bridge (`auth_bridge.py`). It checks
 those internals on startup and refuses to load, with an error, if they ever
 change, rather than guess.
 
+## For other integrations
+
+Other integrations can read Warden's groups (read-only) through
+`custom_components.warden.api`, for example to treat a group's members as a
+household. Import it guarded, since Warden may not be installed:
+
+```python
+try:
+    from custom_components.warden import api as warden
+except ImportError:
+    warden = None
+
+groups = warden.async_get_groups(hass) if warden else None  # None: Warden isn't loaded
+family = warden.async_get_group(hass, group_id) if warden else None
+if family:
+    user_ids = family.members  # frozenset of Home Assistant user ids
+```
+
+Each `GroupInfo` has `id`, `name`, `description`, `members` and `admin`. These
+shapes stay stable across releases; Warden's other modules are internal.
+
 ## Development
 
 ```bash
