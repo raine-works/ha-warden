@@ -8,6 +8,12 @@ Warden wraps the two websocket commands the frontend uses for them:
 * ``lovelace/config`` returns a dashboard's content. For a dashboard a user may
   not open, a placeholder explaining why is returned instead, so a hidden
   dashboard can't be read by asking for it directly.
+* ``frontend/get_system_data`` and ``frontend/subscribe_system_data`` give the
+  frontend the default dashboard (key ``core``). When a user may not open it,
+  they're given their first allowed dashboard instead: the frontend falls back
+  from the default to the ``home`` panel to ``notfound``, and with none of them
+  in a restricted user's sidebar it crashed on every render, stuck on its
+  loading screen.
 """
 
 from __future__ import annotations
@@ -32,6 +38,10 @@ from .models import UiAccess
 
 GET_PANELS = "get_panels"
 LOVELACE_CONFIG = "lovelace/config"
+GET_SYSTEM_DATA = "frontend/get_system_data"
+SUBSCRIBE_SYSTEM_DATA = "frontend/subscribe_system_data"
+SYSTEM_DATA_CORE = "core"
+DEFAULT_PANEL_KEY = "default_panel"
 
 type Handler = Callable[[HomeAssistant, ActiveConnection, dict[str, Any]], Any]
 
@@ -66,6 +76,8 @@ class Guards:
         for command, wrap in (
             (GET_PANELS, self._wrap_get_panels),
             (LOVELACE_CONFIG, self._wrap_lovelace_config),
+            (GET_SYSTEM_DATA, self._wrap_system_data),
+            (SUBSCRIBE_SYSTEM_DATA, self._wrap_system_data),
         ):
             if command not in handlers:
                 LOGGER.warning("Can't guard %s: command not registered", command)
@@ -109,6 +121,41 @@ class Guards:
 
         return get_panels
 
+    def _wrap_system_data(self, original: Handler) -> Handler:
+        manager = self._manager
+
+        @callback
+        def system_data(
+            hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+        ) -> Any:
+            user = connection.user
+            access = manager.ui_access(user)
+            if access is None or msg.get("key") != SYSTEM_DATA_CORE:
+                return original(hass, connection, msg)
+            show_security = manager.needs_mfa_attention(user)
+
+            def rewrite(payload: Any) -> Any:
+                value = payload.get("value") if isinstance(payload, dict) else None
+                if not isinstance(value, dict) or DEFAULT_PANEL_KEY not in value:
+                    return payload
+                fallback = fallback_default_panel(
+                    hass, access, show_security, value[DEFAULT_PANEL_KEY]
+                )
+                if fallback == value[DEFAULT_PANEL_KEY]:
+                    return payload
+                value = {k: v for k, v in value.items() if k != DEFAULT_PANEL_KEY}
+                if fallback is not None:
+                    value[DEFAULT_PANEL_KEY] = fallback
+                return {**payload, "value": value}
+
+            return original(
+                hass,
+                _DefaultPanelRewriter(connection, rewrite),  # type: ignore[arg-type]
+                msg,
+            )
+
+        return system_data
+
     def _wrap_lovelace_config(self, original: Handler) -> Handler:
         manager = self._manager
 
@@ -129,6 +176,53 @@ class Guards:
             )
 
         return lovelace_config
+
+
+class _DefaultPanelRewriter:
+    """Stands in for a connection, giving a restricted user a default they may open.
+
+    It stays the connection a subscription answers on, so every later update is
+    rewritten too.
+    """
+
+    def __init__(
+        self, connection: ActiveConnection, rewrite: Callable[[Any], Any]
+    ) -> None:
+        self._connection = connection
+        self._rewrite = rewrite
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def send_result(self, msg_id: int, result: Any | None = None) -> None:
+        self._connection.send_result(msg_id, self._rewrite(result))
+
+    def send_event(self, msg_id: int, event: Any | None = None) -> None:
+        self._connection.send_event(msg_id, self._rewrite(event))
+
+
+def fallback_default_panel(
+    hass: HomeAssistant, access: UiAccess, show_security: bool, current: Any
+) -> str | None:
+    """The default dashboard for a restricted user: the system's when they may
+    open it, else their first allowed dashboard (None: leave it unset)."""
+    panels = hass.data.get(DATA_PANELS, {})
+
+    def allowed(url_path: Any) -> bool:
+        panel = panels.get(url_path) if isinstance(url_path, str) else None
+        return panel is not None and _panel_allowed(
+            url_path,
+            {"component_name": panel.component_name},
+            access,
+            show_security,
+        )
+
+    if allowed(current):
+        return current
+    for url_path in access.dashboards.items:
+        if allowed(url_path):
+            return url_path
+    return None
 
 
 def _panel_allowed(

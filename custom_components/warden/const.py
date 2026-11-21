@@ -47,7 +47,11 @@ PANEL_COMPONENT = "warden-panel"
 STATIC_URL = "/warden_static"
 
 # Panels a managed user can always open, whatever their groups allow.
-ALWAYS_ALLOWED_PANELS = frozenset({"profile", PANEL_SECURITY})
+# The frontend's last fallback when it has no page for a route (see guards.py):
+# never hidden, or a user whose groups allow none of the fallbacks gets a
+# frontend stuck on its loading screen.
+PANEL_NOT_FOUND = "notfound"
+ALWAYS_ALLOWED_PANELS = frozenset({"profile", PANEL_SECURITY, PANEL_NOT_FOUND})
 
 # The panel key Home Assistant uses for the default dashboard.
 DEFAULT_DASHBOARD = "lovelace"
