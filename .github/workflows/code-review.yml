@@ -1,0 +1,30 @@
+# Claude reviews every pull request against the rules, and answers replies to its comments. The workflow is Raineworks', in
+# raine-works/agents (.github/workflows/code-review.yml): this file only calls it, and comes from the raineworks-base skill's
+# templates/workflows/code-review.yml. Change the workflow there, for every repository at once; here, only its inputs
+# (with:). The Base rules check moves the pin when the shared workflows change.
+name: Code review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+  actions: read
+
+jobs:
+  code-review:
+    name: Code review
+    uses: raine-works/agents/.github/workflows/code-review.yml@bcc3f92307e34338be03ec7f6a243c3435604800 # raine-works/agents master
+    secrets: inherit
+    with:
+      focus: |
+        - Permission and auth enforcement: a change that lets a user see or control an entity, dashboard or panel their groups deny (Deny must always win; the policy in policy.py and the guards in guards.py), or that widens what a non-administrator can reach through the websocket commands.
+        - Two-factor bypasses: any path that lets a user skip required 2FA, or its grace period or setup prompt, and anything that touches the auth store outside auth_bridge.py.
+        - Lockouts: anything that could restrict or demote the owner account, system users, or the last administrator, so nobody can get back in.
+        - Blocking I/O in the event loop, and Home Assistant API use that breaks on new core releases.
+        - Tests through Home Assistant's own permission engine for every access-control change, including the denied path.
