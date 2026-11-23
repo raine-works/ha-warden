@@ -19,5 +19,5 @@ permissions:
 jobs:
   base-rules:
     name: Base rules
-    uses: raine-works/agents/.github/workflows/check-base.yml@a6184e037b7d69e1b6ed1967a83bf0d3987794f1 # raine-works/agents master
+    uses: raine-works/agents/.github/workflows/check-base.yml@50b944a9ca09c0820f8faabca62c6ec17bae64f7 # raine-works/agents master
     secrets: inherit
