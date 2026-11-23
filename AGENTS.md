@@ -15,7 +15,7 @@ panel permissions, and required two-factor authentication. It compiles each pers
 Assistant itself enforces; the owner account is never managed or restricted. Layout and file roles:
 [docs/development.md](docs/development.md); design: [docs/how-it-works.md](docs/how-it-works.md).
 
-- **Check:** `ruff check .`, `ruff format --check .` and `pytest -q` (Python 3.14, `requirements-test.txt`); the `Test`
+- **Check:** `ruff check .`, `ruff format --check .` and `pytest -q` (Python pinned in `.python-version`, `requirements-test.txt`); the `Test`
   workflow runs them, and `Validate` runs hassfest and the Marketplace (HACS) validation.
 - **Release:** bump `version` in `custom_components/warden/manifest.json` in the pull request. When `Test` passes on
   `master`, the `Release` workflow creates the GitHub release `v<version>` if the tag is new. Never tag by hand.

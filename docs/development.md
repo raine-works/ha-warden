@@ -3,11 +3,13 @@
 ## Setup and checks
 
 ```bash
-uv venv -p 3.14 .venv
+uv venv .venv   # uses the exact Python pinned in .python-version
 uv pip install -p .venv -r requirements-test.txt
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/pytest -q
 ```
+
+The Python release is pinned in `.python-version`. Change it on purpose, in a change of its own.
 
 The tests run Warden inside a real Home Assistant and check access through Home Assistant's own permission engine. They live in `tests/`.
 
