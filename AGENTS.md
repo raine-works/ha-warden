@@ -18,7 +18,7 @@ Assistant itself enforces; the owner account is never managed or restricted. Lay
 - **Check:** `ruff check .`, `ruff format --check .` and `pytest -q` (Python pinned in `.python-version`, `requirements-test.txt`); the `Test`
   workflow runs them, and `Validate` runs hassfest and the Marketplace (HACS) validation.
 - **Release:** bump `version` in `custom_components/warden/manifest.json` in the pull request. When `Test` passes on
-  `master`, the `Release` workflow creates the GitHub release `v<version>` if the tag is new. Never tag by hand.
+  `master`, the `Release` workflow creates the GitHub release `v<version>` if the tag is new.
 - **Deny always wins**, from any group and at any scope. Never weaken that, and never let the owner or system users be
   members of, or restricted by, a group.
 - Everything that touches Home Assistant's auth store internals stays in `auth_bridge.py`; dashboard and panel
