@@ -17,8 +17,10 @@ Assistant itself enforces; the owner account is never managed or restricted. Lay
 
 - **Check:** `ruff check .`, `ruff format --check .` and `pytest -q` (Python pinned in `.python-version`, `requirements-test.txt`); the `Test`
   workflow runs them, and `Validate` runs hassfest and the Marketplace (HACS) validation.
-- **Release:** bump `version` in `custom_components/warden/manifest.json` in the pull request. When `Test` passes on
-  `master`, the `Release` workflow creates the GitHub release `v<version>` if the tag is new.
+- **Release:** merge the release pull request: `release-pr.yml` (Raineworks' shared Release pull request) keeps one pull request, `Release v<version>`, open on `master` with the next version: major for a breaking change (`type!:`), minor for a `feat`, patch for anything else that ships (a change to `custom_components/`), with `CHANGELOG.md`'s
+  `## Unreleased` entries under that version. Merging it bumps `custom_components/warden/manifest.json`, and when `Test`
+  passes the `Release` workflow creates `v<version>`. Never bump the version by hand; a change worth noting adds its
+  entry under `## Unreleased`.
 - **Deny always wins**, from any group and at any scope. Never weaken that, and never let the owner or system users be
   members of, or restricted by, a group.
 - Everything that touches Home Assistant's auth store internals stays in `auth_bridge.py`; dashboard and panel
